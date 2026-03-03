@@ -204,147 +204,127 @@ For decision-grade validation, the next step is walk-forward out-of-sample testi
 This project implements a practical Modern Portfolio Theory (MPT) workflow: estimate expected returns and risk, then solve a constrained optimization problem to obtain feasible portfolios.
 
 ### 1) Data & Return Construction
-**Price source:** `yfinance` (adjusted prices by default).  
-**Return series:** daily returns are constructed as either:
-- **Log returns:**  
-  \[
-  r_t = \ln\left(\frac{P_t}{P_{t-1}}\right)
-  \]
-  Used by default due to additivity over time.
-- **Simple returns:**  
-  \[
-  r_t = \frac{P_t}{P_{t-1}} - 1
-  \]
 
-**Portfolio returns (constant-weight / daily rebalanced):**
-\[
-r_{p,t} = \sum_{i=1}^N w_i \, r_{i,t}
-\]
+**Price source:** yfinance (adjusted prices by default).
+
+**Daily return series** can be constructed as:
+
+- **Log returns:**  
+  r_t = ln(P_t / P_{t-1})  
+  Used by default due to additivity over time.
+
+- **Simple returns:**  
+  r_t = (P_t / P_{t-1}) - 1
+
+**Portfolio returns (constant-weight / daily rebalanced):**  
+r_p,t = Σ_i (w_i * r_i,t)  
 This matches typical optimizer assumptions and avoids path-dependent “share” effects.
 
 ---
 
 ### 2) Estimation Layer (Inputs to Optimization)
 
-#### Expected returns \(\mu\)
-The optimizer requires a vector of annualized expected returns:
-\[
-\mu = \mathbb{E}[r]
-\]
-This tool supports:
+#### Expected returns (mu)
 
-- **Historical mean:**
-  \[
-  \hat{\mu}_{\text{daily}} = \frac{1}{T}\sum_{t=1}^T r_t, 
-  \quad \hat{\mu}_{\text{annual}} = \hat{\mu}_{\text{daily}} \cdot A
-  \]
-  where \(A\) is the annualization factor (default \(252\)).
+The optimizer requires a vector of annualized expected returns:  
+mu = E[r]
 
-- **EWMA mean (exponentially weighted):**
-  \[
-  \hat{\mu}_{\text{daily}} = \sum_{t=1}^T \omega_t r_t,
-  \quad \omega_t \propto (1-\lambda)\lambda^{T-t}
-  \]
-  This reduces sensitivity to stale history by emphasizing recent observations.
-
-#### Covariance matrix \(\Sigma\)
-Risk is modeled via the annualized covariance matrix:
-\[
-\Sigma = \operatorname{Cov}(r)
-\]
 Supported estimators:
 
-- **Sample covariance:**
-  \[
-  \hat{\Sigma}_{\text{daily}} = \frac{1}{T-1}\sum_{t=1}^T (r_t-\hat{\mu})(r_t-\hat{\mu})^\top,
-  \quad \hat{\Sigma}_{\text{annual}} = \hat{\Sigma}_{\text{daily}}\cdot A
-  \]
+- **Historical mean (annualized):**  
+  mu_daily = (1/T) * Σ_t r_t  
+  mu_annual = mu_daily * A  
+  where A is the annualization factor (default 252).
 
-- **EWMA covariance (RiskMetrics-style):**
-  \[
-  \hat{\Sigma}_{\text{daily}} = \sum_{t=1}^T \omega_t (r_t-\hat{\mu})(r_t-\hat{\mu})^\top
-  \]
+- **EWMA mean (exponentially weighted):**  
+  mu_daily = Σ_t (omega_t * r_t)  
+  omega_t ∝ (1 - lambda) * lambda^(T - t)  
+  This reduces sensitivity to stale history by emphasizing recent observations.
 
-- **Shrinkage covariance (preferred in practice):**
-  \[
-  \hat{\Sigma}_{\text{shrink}} = (1-\alpha)\hat{\Sigma}_{\text{sample}} + \alpha T
-  \]
-  where \(T\) is a structured target (e.g., diagonal or identity-scaled), and \(\alpha\in[0,1]\) controls shrinkage.
-  If available, **Ledoit–Wolf** shrinkage (via scikit-learn) is used.
+#### Covariance matrix (Sigma)
+
+Risk is modeled via the annualized covariance matrix:  
+Sigma = Cov(r)
+
+Supported estimators:
+
+- **Sample covariance (annualized):**  
+  Sigma_daily = (1/(T-1)) * Σ_t (r_t - mu)(r_t - mu)^T  
+  Sigma_annual = Sigma_daily * A
+
+- **EWMA covariance (RiskMetrics-style):**  
+  Sigma_daily = Σ_t omega_t * (r_t - mu)(r_t - mu)^T  
+  Sigma_annual = Sigma_daily * A
+
+- **Shrinkage covariance (preferred in practice):**  
+  Sigma_shrink = (1 - alpha) * Sigma_sample + alpha * Target  
+  Target is typically a structured matrix (diagonal or scaled identity).  
+  If available, Ledoit–Wolf shrinkage (scikit-learn) is used.
 
 #### Winsorization (robust preprocessing)
-To reduce the impact of extreme outliers (common in daily returns), returns can be **winsorized** column-wise by clipping tails:
-\[
-r_{i,t} \leftarrow \min\left(\max(r_{i,t}, q_i(p)),\, q_i(1-p)\right)
-\]
-where \(q_i(p)\) is the \(p\)-quantile of asset \(i\)’s returns. Typical default: \(p=0.01\) (1% / 99%).
+
+To reduce the impact of extreme outliers (common in daily returns), returns can be winsorized per asset by clipping tails:
+
+r_i,t = clip(r_i,t, q_i(p), q_i(1-p))
+
+where q_i(p) is the p-quantile for asset i.  
+Typical default: p = 0.01 (clip below 1% and above 99%).
 
 #### PSD enforcement (numerical stability)
-Optimizers require \(\Sigma\) to behave like a valid covariance matrix (positive semidefinite).  
-If numerical issues occur, the matrix is symmetrized and eigenvalues are clipped:
-\[
-\Sigma \leftarrow Q \max(\Lambda, \epsilon I) Q^\top
-\]
-with a small ridge term added to improve conditioning.
+
+Optimizers require Sigma to behave like a valid covariance matrix (positive semidefinite).  
+If numerical issues occur, Sigma is symmetrized and eigenvalues are clipped to a small floor, then a small ridge term is added for conditioning.
 
 ---
 
 ### 3) Optimization Problems Solved
 
-#### A) Minimum Variance Portfolio (global minimum variance)
-\[
-\min_{w} \quad w^\top \Sigma w
-\]
+#### A) Minimum Variance Portfolio (Global Minimum Variance)
+
+Objective: minimize portfolio variance
+
+min_w ( w^T * Sigma * w )
+
 subject to constraints (see below).
 
-#### B) Maximum Sharpe Ratio Portfolio
+#### B) Maximum Sharpe Ratio Portfolio (Return per Unit Risk)
+
 Sharpe ratio:
-\[
-S(w) = \frac{w^\top \mu - r_f}{\sqrt{w^\top \Sigma w}}
-\]
-The solver minimizes the negative Sharpe (equivalent to maximizing Sharpe):
-\[
-\min_{w} \quad -S(w)
-\]
-Optionally with **L2 regularization** for stability:
-\[
-\min_{w} \quad -S(w) + \lambda \sum_{i=1}^N w_i^2
-\]
-This discourages fragile, concentrated solutions caused by noisy \(\mu\).
+
+S(w) = (w^T * mu - r_f) / sqrt(w^T * Sigma * w)
+
+The solver maximizes Sharpe by minimizing the negative Sharpe:
+
+min_w ( -S(w) )
+
+Optionally with L2 regularization for stability:
+
+min_w ( -S(w) + lambda * Σ_i w_i^2 )
+
+This discourages fragile, concentrated solutions caused by noisy mu.
 
 ---
 
 ### 4) Constraints (Feasibility / Mandate Controls)
 
-Common constraints:
-- **Full investment:**
-  \[
-  \sum_{i=1}^N w_i = 1
-  \]
-- **Bounds (long-only and position limits):**
-  \[
-  w_i \in [w_{\min}, w_{\max}]
-  \]
-  In long-only mode, \(w_i \ge 0\).
-
-Optional concentration constraint:
-- **HHI cap (Herfindahl–Hirschman Index):**
-  \[
-  \text{HHI}(w)=\sum_{i=1}^N w_i^2 \le \text{HHI}_{\max}
-  \]
-Lower HHI implies more diversified allocations.
+- **Full investment:** Σ_i w_i = 1
+- **Bounds:** w_i ∈ [w_min, w_max] (and w_i >= 0 in long-only mode)
+- **Optional concentration cap (HHI):**  
+  HHI(w) = Σ_i w_i^2 <= HHI_max  
+  Lower HHI implies more diversified allocations.
 
 ---
 
 ### 5) Numerical Optimization Method
-Optimization is performed with **SciPy SLSQP** (Sequential Least Squares Quadratic Programming), which supports:
+
+Optimization uses **SciPy SLSQP** (Sequential Least Squares Quadratic Programming), which supports:
 - equality constraints (e.g., sum-to-one),
 - inequality constraints (e.g., HHI cap),
 - bound constraints (min/max weights).
 
-To reduce dependence on local minima and starting conditions, the tool uses **multi-start optimization**:
-- random feasible initial weights (Dirichlet simplex samples),
-- solve the optimization from many starts,
+To reduce dependence on starting conditions, the tool uses **multi-start optimization**:
+- generate many feasible starting weights (Dirichlet simplex samples),
+- solve from each start,
 - deduplicate and rank solutions.
 
 ---
@@ -352,22 +332,23 @@ To reduce dependence on local minima and starting conditions, the tool uses **mu
 ### 6) Candidate Ranking & Efficient Set Approximation
 
 Each candidate portfolio is evaluated by:
-- expected return \(w^\top \mu\),
-- volatility \(\sqrt{w^\top\Sigma w}\),
-- Sharpe ratio.
+- expected return: w^T * mu
+- volatility: sqrt(w^T * Sigma * w)
+- Sharpe ratio
 
-A Pareto-efficient subset (“efficient set”) is extracted by discarding dominated portfolios (higher risk and lower return than another candidate).
+A Pareto-efficient subset (“efficient set”) is extracted by removing dominated portfolios (higher risk and lower return than another candidate).
 
 ---
 
-### 7) Risk & Performance Metrics (Reporting)
+### 7) Reporting Metrics
+
 The reporting layer exports:
-- annualized return (based on configured return type and annualization factor),
-- annualized volatility,
-- Sharpe ratio (using user-supplied \(r_f\)),
-- max drawdown (from cumulative equity curve),
-- concentration proxy (HHI),
-- full weights and portfolio return series for auditability.
+- annualized return
+- annualized volatility
+- Sharpe ratio (using user-supplied r_f)
+- max drawdown (from cumulative equity curve)
+- concentration proxy (HHI)
+- full weights and portfolio return series for auditability
 
 ---
 
