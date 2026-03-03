@@ -87,6 +87,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=0.94,
         help="EWMA lambda for mean/cov if ewma is used (default: 0.94).",
     )
+    p.add_argument("--winsorize", action="store_true", help="Winsorize returns before estimation")
+    p.add_argument("--winsor-q", type=float, default=0.01, help="Winsorization tail quantile (default: 0.01)")
 
     # Optimization objectives
     p.add_argument(
@@ -110,7 +112,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         action="store_true",
         help="Enforce long-only weights (default: off unless you pass this flag).",
     )
-
+    p.add_argument("--hhi-max", type=float, default=None, help="Max concentration (sum w^2). e.g. 0.30")
+    p.add_argument("--l2", type=float, default=0.0, help="L2 regularization for max Sharpe. Try 0.05–0.30")
     # Search
     p.add_argument("--starts", type=int, default=300, help="Number of random multi-starts (default: 300)")
     p.add_argument("--top", type=int, default=20, help="Top N portfolios to export (default: 20)")
@@ -334,6 +337,11 @@ def sharpe_ratio(r: pd.Series, rf: float, returns_method: str, annualization: in
 
 def main() -> None:
     args = parse_args()
+    
+    # Output dirs + tag
+    dirs = ensure_output_dirs(args.outdir)
+    tag = args.tag.strip() if args.tag else timestamp_tag()
+    
     tickers = parse_tickers(args.tickers)
     baseline_w = parse_baseline_weights(tickers, args.baseline_weights)
 
@@ -347,9 +355,17 @@ def main() -> None:
     prices = get_prices(tickers, data_cfg)
     asset_returns = compute_returns(prices, method=args.returns)
 
+    from portfolio.estimation import winsorization_stats
+
+    if args.winsorize:
+        ws = winsorization_stats(asset_returns.dropna(how="any"), q=float(args.winsor_q))
+        save_table(ws.round(10), dirs["tables"] / f"winsorization_stats_{tag}.csv")
+
     est_cfg = EstimationConfig(
         annualization=args.annualization,
         ewma_lambda=args.lam,
+        winsorize=bool(args.winsorize),
+        winsor_q=float(args.winsor_q),
     )
     mu, sigma = estimate_mu_sigma(
         asset_returns,
@@ -362,6 +378,8 @@ def main() -> None:
         long_only=bool(args.long_only),
         min_weight=float(args.minw),
         max_weight=float(args.maxw),
+        hhi_max=args.hhi_max,
+        l2_lambda=float(args.l2),
         n_starts=int(args.starts),
         top_n=int(args.top),
         random_seed=int(args.seed),
@@ -413,9 +431,6 @@ def main() -> None:
         top = None  # handled below
         top_name = "both"
 
-    # Output dirs + tag
-    dirs = ensure_output_dirs(args.outdir)
-    tag = args.tag.strip() if args.tag else timestamp_tag()
 
     # Save tables
     save_table(mu.to_frame("mu").round(8), dirs["tables"] / f"mu_{tag}.csv")
@@ -516,6 +531,7 @@ def main() -> None:
         f"Date range (returns): {start_dt} -> {end_dt}",
         f"Returns: {args.returns} | annualization={args.annualization}",
         f"Estimation: mean={args.mean} | cov={args.cov} | ewma_lambda={args.lam}",
+        f"Winsorization: enabled={bool(args.winsorize)} | q={args.winsor_q}",
         f"Optimization: objective={args.objective} | long_only={bool(args.long_only)} | minw={args.minw} | maxw={args.maxw}",
         f"Search: starts={args.starts} | seed={args.seed}",
         "",
@@ -532,7 +548,7 @@ def main() -> None:
         "- Candidate ranking uses in-sample mu/sigma estimates (not out-of-sample).",
         "- If you want institutional-grade robustness, next step is walk-forward OOS + turnover/cost penalties.",
     ]
-    write_text_report(lines, dirs["base"] / f"opt_report_{tag}.txt")
+    write_text_report(lines, dirs["reports"] / f"opt_report_{tag}.txt")
 
     # Console output
     print("Saved outputs to:", dirs["base"])

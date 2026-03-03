@@ -48,6 +48,9 @@ class EstimationConfig:
     shrink_alpha_fallback: Optional[float] = None  # if None: auto heuristic
     shrink_target: Literal["diagonal", "identity"] = "diagonal"
 
+    winsorize: bool = False
+    winsor_q: float = 0.01  # 1% tails
+
 
 def _as_2d(x: np.ndarray) -> np.ndarray:
     if x.ndim != 2:
@@ -55,18 +58,61 @@ def _as_2d(x: np.ndarray) -> np.ndarray:
     return x
 
 
-def _validate_returns(returns: pd.DataFrame) -> pd.DataFrame:
+def _validate_returns(returns: pd.DataFrame, cfg: EstimationConfig) -> pd.DataFrame:
     if not isinstance(returns, pd.DataFrame):
         raise TypeError("returns must be a pandas DataFrame with columns = assets.")
     if returns.shape[1] < 2:
         raise ValueError("returns must contain at least 2 assets (2 columns).")
+
     r = returns.dropna(how="any")
     if len(r) < 20:
         raise ValueError("Too few return observations after dropping NaNs.")
     if not np.isfinite(r.to_numpy()).all():
         raise ValueError("returns contains non-finite values.")
+
+    if cfg.winsorize:
+        r = winsorize_returns(r, cfg.winsor_q)
+
     return r
 
+def winsorize_returns(r: pd.DataFrame, q: float) -> pd.DataFrame:
+    """
+    Winsorize per-asset returns by clipping at [q, 1-q] quantiles.
+    Example: q=0.01 clips 1% tails.
+    """
+    if not (0.0 <= q < 0.5):
+        raise ValueError("winsor_q must be in [0, 0.5).")
+
+    lower = r.quantile(q, axis=0, numeric_only=True)
+    upper = r.quantile(1.0 - q, axis=0, numeric_only=True)
+
+    # Per-column clipping
+    r_clip = r.clip(lower=lower, upper=upper, axis=1)
+    return r_clip
+
+def winsorization_stats(r: pd.DataFrame, q: float) -> pd.DataFrame:
+    """
+    Returns per-asset stats: how many points were clipped at the lower/upper bounds.
+    """
+    if not (0.0 <= q < 0.5):
+        raise ValueError("winsor_q must be in [0, 0.5).")
+
+    lower = r.quantile(q, axis=0)
+    upper = r.quantile(1.0 - q, axis=0)
+
+    below = (r.lt(lower, axis=1)).sum(axis=0)
+    above = (r.gt(upper, axis=1)).sum(axis=0)
+    total = pd.Series(len(r), index=r.columns)
+
+    out = pd.DataFrame({
+        "n_obs": total,
+        "n_clipped_low": below,
+        "n_clipped_high": above,
+        "pct_clipped": (below + above) / total.replace(0, pd.NA),
+        "q_low": lower,
+        "q_high": upper,
+    })
+    return out
 
 def annualize_mean(mu_daily: np.ndarray, annualization: int) -> np.ndarray:
     return mu_daily * float(annualization)
@@ -116,7 +162,7 @@ def estimate_mean(
     """
     Returns annualized expected returns (mu) as a Series indexed by asset tickers.
     """
-    r = _validate_returns(returns)
+    r = _validate_returns(returns, cfg)
 
     if method == "historical":
         mu_d = r.mean(axis=0).to_numpy(dtype=float)
@@ -192,7 +238,7 @@ def estimate_cov(
     Returns annualized covariance matrix (Sigma) as a DataFrame (assets x assets).
     Always PSD-enforced.
     """
-    r = _validate_returns(returns)
+    r = _validate_returns(returns, cfg)
 
     if method == "sample":
         cov_d = _sample_cov(r)

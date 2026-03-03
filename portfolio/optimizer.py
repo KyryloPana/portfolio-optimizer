@@ -24,7 +24,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
-
+from portfolio.constraints import sum_to_one_constraint, hhi_max_constraint
 
 Objective = Literal["max_sharpe", "min_var"]
 
@@ -47,6 +47,10 @@ class OptimizerConfig:
 
     # selection
     top_n: int = 25
+    # anti-corner constraint
+    hhi_max: float | None = None
+
+    l2_lambda: float = 0.0
 
 
 # -----------------------
@@ -154,10 +158,12 @@ def solve(
     constraints: List[Dict],
     cfg: OptimizerConfig,
 ) -> Tuple[np.ndarray, bool]:
+    from portfolio.objectives import neg_sharpe_l2, min_variance  # or however your min-var is defined
+
     if objective == "max_sharpe":
-        fun = lambda w: obj_neg_sharpe(w, mu, sigma, rf)
+        fun = lambda w: neg_sharpe_l2(w, mu, sigma, rf, cfg.l2_lambda)
     elif objective == "min_var":
-        fun = lambda w: obj_min_var(w, sigma)
+        fun = lambda w: min_variance(w, sigma)
     else:
         raise ValueError("objective must be 'max_sharpe' or 'min_var'")
 
@@ -272,8 +278,13 @@ def generate_portfolios(
     if mu_vec.shape[0] != n or sig.shape != (n, n):
         raise ValueError("Dimensions mismatch: ensure tickers align with mu and sigma.")
 
+    from portfolio.constraints import sum_to_one_constraint, hhi_max_constraint
+
     bounds = make_bounds(cfg, n)
     constraints = [sum_to_one_constraint()]
+
+    if cfg.hhi_max is not None:
+        constraints.append(hhi_max_constraint(cfg.hhi_max))
 
     rng = np.random.default_rng(cfg.random_seed)
     starts = dirichlet_starts(rng, n, cfg.n_starts)
