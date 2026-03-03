@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Outputs
+output/
+portfolio/cache/
+
+# OS
+.DS_Store
+
+# Tooling
+.vscode/
+.ruff_cache/
+.ipynb_checkpoints/
+
+
