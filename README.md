@@ -1,86 +1,68 @@
-# Portfolio Analytics Tool — v0.2.0
+# Portfolio Optimizer (MPT) — v0.2
 
-A Python-based command-line tool for analyzing portfolio performance using historical market data and user-provided series.
+A reproducible, modular portfolio optimization tool built on Modern Portfolio Theory (MPT).
 
-It computes core risk/return metrics, benchmark-relative statistics, rolling diagnostics, and exports reproducible reports (tables, figures, and a text summary).
+Core goals:
+- Optimize **minimum variance** and/or **maximum Sharpe ratio** (return per unit risk)
+- Generate a **ranked candidate set** of feasible portfolios (not a single fragile allocation)
+- Enforce practical constraints (long-only, min/max weights, concentration control)
+- Improve estimator robustness (EWMA expected returns, covariance shrinkage, winsorization)
+- Export transparent artifacts (CSV tables, plots, text report) for auditability
 
-Designed as a foundational analytics engine for quantitative research, risk analysis, and systematic evaluation—built to be extended toward multi-strategy comparison in future releases.
+> Important: Outputs are **in-sample** unless walk-forward is enabled (planned/next). In-sample ranking is useful for debugging and iteration, not for decision-grade deployment.
 
 ---
 
-## 1. Key Features (v0.2.0)
+## 1. Key Features (v0.2)
 
-- **Deterministic market data ingestion**
-  - Downloads historical adjusted prices via Yahoo Finance (`yfinance`)
-  - Uses local caching to avoid unnecessary re-downloads (`--cache-days`)
+### Optimization
+- **Max Sharpe** (maximize excess return per unit volatility)
+- **Min Variance** (minimum variance portfolio)
+- Multi-start optimization (random simplex starts) → **many candidate solutions**
+- Candidate ranking (Sharpe-first by default)
+- Pareto-efficient subset approximation (risk/return “efficient set”)
 
-- **Flexible portfolio + benchmark inputs (ticker-built or CSV-loaded)**
-  - Portfolio from tickers: `--portfolio-tickers` with optional `--portfolio-weights`
-  - Portfolio from CSV: `--portfolio-csv` with `--portfolio-csv-format {returns,prices}`
-  - Benchmark from ticker: `--benchmark-ticker`
-  - Benchmark from CSV: `--benchmark-csv` with `--benchmark-csv-format {returns,prices}`
+### Constraints & Regularization
+- Long-only weights (optional)
+- Per-asset `min_weight` / `max_weight`
+- Concentration control:
+  - Optional **HHI cap**: `sum(w^2) <= hhi_max`
+- Max Sharpe stability:
+  - Optional **L2 regularization**: `-Sharpe + λ * sum(w^2)`
 
-- **Return construction and portfolio building**
-  - Converts prices to returns when needed (Yahoo Finance pulls or CSV in `prices` mode)
-  - Builds a buy-and-hold portfolio return series from weights and initial capital (`--v0`)
+### Estimation Layer
+- Expected return (μ):
+  - historical mean
+  - EWMA mean
+- Covariance (Σ):
+  - sample covariance
+  - EWMA covariance
+  - shrinkage covariance (Ledoit–Wolf if available; fallback shrink-to-target)
+- Optional **winsorization** (clip 1% tails) before estimating μ and Σ
+- PSD enforcement for numerical stability
 
-- **Core performance metrics**
-  - CAGR (compound annual growth rate)
-  - Annualized volatility
-  - Sharpe ratio
-  - Maximum drawdown
-
-- **Benchmark-relative analytics**
-  - Beta
-  - Annualized alpha
-  - Tracking error
-  - Information ratio
-  - Correlation  
-  *(computed on the overlapping date range between strategy and benchmark)*
-
-- **Rolling diagnostics**
-  - Rolling volatility
-  - Rolling Sharpe ratio
-
-- **Automated exports**
-  - Figures (PNG)
-  - Tables (CSV)
-  - Text-based summary report
-
-- **Optional PyFolio tear sheet export**
-  - Generates a PyFolio tear sheet for a selected return series (`--pyfolio`)
-  - Optional HTML export path (`--pyfolio-out`)
-  - Supports selecting the target series (`--pyfolio-target`)
-
-- **CLI interface**
-  - Dates (`--start`, `--end`), caching (`--cache-days`), output directory (`--outdir`)
-  - Optional interactive plotting (`--show-plots`)
-  - Run tagging for reproducible outputs (`--tag`)
+### Outputs (Reproducible Artifacts)
+Saved in `output/` (or custom `--outdir`) with a run tag:
+- Tables (CSV): μ, Σ, candidate set, top candidates, efficient set, portfolio returns, weights, summary
+- Figures (PNG): frontier scatter, equity curves, drawdowns, weight bars
+- Text report: run configuration + summary tables
 
 ---
 
 ## 2. Project Structure
 
 ```bash
-portfolio-analytics-tool/
+portfolio-optimizer/
+├─ optimize.py # CLI orchestrator
 ├─ portfolio/
-│  ├─ __init__.py
-│  ├─ data.py            # Market data ingestion & caching (yfinance) + CSV series loading
-│  ├─ metrics.py         # Performance & risk analytics + benchmark-relative metrics
-│  ├─ plots.py           # Visualization utilities
-│  ├─ report.py          # Export + reporting utilities (tables/figures/text)
-│  └─ pyfolio_report.py  # OPTIONAL: PyFolio tear sheet export
-├─ data/
-│  ├─ sample_portfolio.csv
-│  └─ sample_benchmark.csv
-├─ notebooks/            # Optional notebooks / scratch work
-├─ output/               # Default output directory (generated)
-├─ optimize.py            # CLI entry point / orchestration layer
-├─ README.md
-├─ CHANGELOG.md
-├─ requirements.txt
-└─ .gitignore
-
+│ ├─ init.py
+│ ├─ data.py # yfinance ingestion + caching + returns utilities
+│ ├─ estimation.py # μ/Σ estimation (EWMA, shrinkage, winsorization)
+│ ├─ objectives.py # max Sharpe + L2 regularization, min variance
+│ ├─ constraints.py # sum-to-1, HHI cap constraint
+│ ├─ optimizer.py # multi-start optimization + ranking + efficient set
+│ └─ report.py # output dirs + CSV/PNG/text writing
+└─ output/ # generated artifacts (gitignored)
 ```
 
 **Design principles**
@@ -103,8 +85,8 @@ portfolio-analytics-tool/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/KyryloPana/portfolio-analytics-tool.git
-cd portfolio-analytics-tool
+git clone https://github.com/KyryloPana/portfolio-optimizer.git
+cd portfolio-optimizer
 ```
 2. (Optional but recommended) Create a virtual environment:
 ```bash
@@ -116,85 +98,81 @@ source .venv/bin/activate      # macOS / Linux
 ```bash
 pip install -r requirements.txt
 ```
-4. (Optional) Install PyFolio add-on (v0.1.1):
-```bash
-pip install pyfolio-reloaded
-```
+
 ---
 
 ## 4. Quick Start
 
-### Run using the included sample CSV files (prices)
+### Run max Sharpe + min variance, export top candidates
 ```bash
-python optimize.py  --portfolio-csv './data/sample_portfolio.csv'  --portfolio-csv-format 'prices'  --benchmark-csv './data/sample_benchmark.csv' --benchmark-csv-format 'prices'
+python optimize.py  --tickers 'AAPL,MSFT,NVDA,AMZN,SPY'  --start '2021-01-01'  --returns 'log'  --mean 'ewma'  --lam 0.97  --cov 'shrink'  --winsorize  --winsor-p 0.01  --objective 'both'  --rf 0.045  --long-only  --minw 0.0  --maxw 0.6  --hhi-max 0.30  --l2 0.10  --starts 400  --top 20  --outdir 'output'
 ```
-
-### Run a portfolio built from tickers (equal weights) vs a benchmark ticker
-```bash
-python optimize.py  --portfolio-tickers "AAPL,MSFT,SPY"  --benchmark-ticker 'SPY'
-```
-
-### Run a portfolio built from tickers with explicit weights
-```bash
-python optimize.py  --portfolio-tickers "SPY,TLT,GLD"  --portfolio-weights "SPY=0.6,TLT=0.3,GLD=0.1"  --benchmark-ticker 'SPY'
-```
-
-Default configuration
-- Start date: 2022-01-01
-- End date: latest available
-- Cache validity: 3 days
-- Output directory: output/
 
 ---
 
 ## 5. CLI Usage
 
-### Examples
+### Universe & time range
 
-**1) Run using the included sample CSV files (both are prices)**
-```bash
-python optimize.py  --tickers 'AAPL,MSFT,SPY'  --benchmark 'SPY'  --start '2018-01-01'  --cache-days 5  --outdir 'output'  --show-plots
-```
-
-**2) Build a portfolio from tickers (equal weights) vs a benchmark ticker**
-```bash
-python optimize.py  --portfolio-tickers "AAPL,MSFT,SPY"  --benchmark-ticker 'SPY'  --start '2018-01-01'  --cache-days 5  --outdir 'output'  --show-plots
-```
-
-**3) Build a portfolio from tickers with explicit weights**
-```bash
-python optimize.py   --portfolio-tickers "SPY,TLT,GLD"   --portfolio-weights "SPY=0.6,TLT=0.3,GLD=0.1"   --benchmark-ticker 'SPY'   --start '2018-01-01' 
-```
-
-**4) Optional: PyFolio tear sheet**
-```bash
-python optimize.py   --portfolio-tickers "MSTR,NVDA,AAPL"   --benchmark-ticker SPY   --start 2018-01-01  --pyfolio --pyfolio-target NVDA --pyfolio-out "output/pyfolio.html"
-```
-
-
-
-**Available Arguments**
 | Argument | Description |
 |---|---|
-| `--portfolio-tickers` | Comma-separated tickers used to construct PORTFOLIO (e.g., `"AAPL,MSFT,SPY"`) |
-| `--portfolio-weights` | Optional weights for `--portfolio-tickers`: `TICKER=w` pairs (e.g., `"AAPL=0.5,MSFT=0.3,SPY=0.2"`) or positional list (e.g., `"0.5,0.3,0.2"`) |
-| `--portfolio-csv` | Path to CSV containing a portfolio series (returns or prices) |
-| `--portfolio-csv-format` | CSV content type: `returns` (default) or `prices` (used only with `--portfolio-csv`) |
-| `--benchmark-ticker` | Benchmark ticker symbol (e.g., `"SPY"`) |
-| `--benchmark-csv` | Path to CSV containing a benchmark series (returns or prices) |
-| `--benchmark-csv-format` | CSV content type: `returns` (default) or `prices` (used only with `--benchmark-csv`) |
-| `--V0` | Initial portfolio value (scale factor). Default: `1.0` |
-| `--tickers` | Optional extra tickers to include in the analysis panel (add-on columns) |
-| `--start` | Start date (`YYYY-MM-DD`). Default: `2022-01-01` |
-| `--end` | End date (`YYYY-MM-DD`, optional). Default: latest available |
-| `--cache-days` | Re-download market data if cache is older than N days. Default: `3` |
-| `--outdir` | Output directory. Default: `output/` |
-| `--show-plots` | Display plots interactively (default: off) |
-| `--pyfolio` | Generate PyFolio tear sheet (optional add-on) |
-| `--pyfolio-target` | Column/ticker to analyze with PyFolio (default: first non-benchmark series) |
-| `--pyfolio-out` | Output path for PyFolio HTML (optional) |
-| `--tag` | Custom run tag used in output filenames (default: timestamp) |
+| `--tickers` | **Required.** Comma-separated tickers. |
+| `--start` | Start date (YYYY-MM-DD). |
+| `--end` | End date (YYYY-MM-DD). Optional. |
+| `--interval` | Data interval. Default: `1d`. |
+| `--cache-days` | Cache TTL in days. |
 
+### Return construction
+
+| Argument | Description |
+|---|---|
+| `--returns {log,simple}` | Return type. Default: `log`. |
+| `--annualization` | Annualization factor. Default: `252`. |
+
+### Estimation
+
+| Argument | Description |
+|---|---|
+| `--mean {historical,ewma}` | Mean estimator. |
+| `--cov {sample,ewma,shrink}` | Covariance estimator. |
+| `--lam` | EWMA lambda. Default: `0.94`. |
+| `--winsorize` | Enable winsorization (flag). |
+| `--winsor-p` | Winsorization percentile. Default: `0.01`. |
+
+### Optimization
+
+| Argument | Description |
+|---|---|
+| `--objective {max_sharpe,min_var,both}` | Optimization objective(s). Default: `both`. |
+| `--rf` | Annual risk-free rate. |
+| `--starts` | Multi-start count. |
+| `--top` | Export top N candidates. |
+| `--seed` | Random seed. |
+
+### Constraints & stability
+
+| Argument | Description |
+|---|---|
+| `--long-only` | Enforce long-only constraint (flag). |
+| `--minw` | Minimum per-asset weight. |
+| `--maxw` | Maximum per-asset weight. |
+| `--hhi-max` | Optional concentration cap (HHI). |
+| `--l2` | L2 regularization strength (for max Sharpe). |
+
+### Output
+
+| Argument | Description |
+|---|---|
+| `--outdir` | Output directory. |
+| `--tag` | Optional run tag override. |
+| `--show-plots` | Show interactive plots (flag). |
+
+---
+
+## Example
+```bash
+python optimize.py  --tickers 'AAPL,MSFT,NVDA,AMZN,SPY'  --start '2021-01-01'  --returns 'log'  --mean 'ewma'  --lam 0.97  --cov 'shrink'  --winsorize  --winsor-p 0.01  --objective 'both'  --rf 0.045  --long-only  --minw 0.0  --maxw 0.6  --hhi-max 0.30  --l2 0.10  --starts 400  --top 20  --outdir 'output'
+```
 
 ***To see the full, authoritative CLI help:***
 ```bash
@@ -202,91 +180,208 @@ python optimize.py --help
 ```
 ---
 
-## 6. Outputs
-Each run generates a tagged (timestamped by default) set of outputs in the output directory.
+## 6. Notes on Interpretation
 
-### Figures (`output/figures/`)
-- Equity curve
-- Drawdowns
-- Rolling volatility
-- Rolling Sharpe ratio
+### In-sample vs decision-grade
 
-### Tables (`output/tables/`)
-- Core performance metrics
-- Benchmark-relative statistics
+This tool currently ranks candidate portfolios using the same data used for estimation. This is useful for:
 
-### Text Report (`output/`)
-A concise, human-readable summary including:
-- Date range
-- Assets analyzed
-- Core metrics
-- Benchmark-relative metrics
+- debugging and sanity checks
+- understanding constraint impacts
+- iterating on estimators, constraints, and regularization
 
-### PyFolio Report (optional)
-If `--pyfolio` is enabled:
-- An HTML tear sheet (path controlled by `--pyfolio-out`)
-- A companion folder of PNGs next to the HTML (captured PyFolio figures)
+For decision-grade validation, the next step is walk-forward out-of-sample testing:
 
-All outputs are deterministic and reproducible given the same inputs (including cached market data).
+- rolling 252-day estimation window
+- optimize
+- apply weights for the next 21 days
+- repeat
+- compute OOS Sharpe, max drawdown, and turnover
 
 
-## 7. Methodology Notes
+## 7. Techniques and Mathematical Tools Used
 
-- Prices are sourced from Yahoo Finance (`yfinance`) and use adjusted pricing (`auto_adjust=True`) to account for splits/dividends.
-- Returns are computed as simple arithmetic returns (`pct_change`).
-- Annualization assumes 252 trading days per year.
-- Alpha and beta use a realized CAPM-style formulation.
-- Information ratio is undefined when tracking error is zero (e.g., comparing a series to itself over the same dates).
-- Rolling metrics use a default 63-day (~3-month) window.
+This project implements a practical Modern Portfolio Theory (MPT) workflow: estimate expected returns and risk, then solve a constrained optimization problem to obtain feasible portfolios.
 
-### PyFolio notes (optional)
-- PyFolio generates a tear sheet for a single return series (`pd.Series`).
-- When multiple return columns are available, the tool selects one target series (or uses `--pyfolio-target` if provided).
-- PyFolio is treated as an optional reporting utility; the core analytics pipeline remains independent.
+### 1) Data & Return Construction
+**Price source:** `yfinance` (adjusted prices by default).  
+**Return series:** daily returns are constructed as either:
+- **Log returns:**  
+  \[
+  r_t = \ln\left(\frac{P_t}{P_{t-1}}\right)
+  \]
+  Used by default due to additivity over time.
+- **Simple returns:**  
+  \[
+  r_t = \frac{P_t}{P_{t-1}} - 1
+  \]
 
-This tool prioritizes clarity, correctness, and reproducibility over predictive claims.
+**Portfolio returns (constant-weight / daily rebalanced):**
+\[
+r_{p,t} = \sum_{i=1}^N w_i \, r_{i,t}
+\]
+This matches typical optimizer assumptions and avoids path-dependent “share” effects.
 
+---
+
+### 2) Estimation Layer (Inputs to Optimization)
+
+#### Expected returns \(\mu\)
+The optimizer requires a vector of annualized expected returns:
+\[
+\mu = \mathbb{E}[r]
+\]
+This tool supports:
+
+- **Historical mean:**
+  \[
+  \hat{\mu}_{\text{daily}} = \frac{1}{T}\sum_{t=1}^T r_t, 
+  \quad \hat{\mu}_{\text{annual}} = \hat{\mu}_{\text{daily}} \cdot A
+  \]
+  where \(A\) is the annualization factor (default \(252\)).
+
+- **EWMA mean (exponentially weighted):**
+  \[
+  \hat{\mu}_{\text{daily}} = \sum_{t=1}^T \omega_t r_t,
+  \quad \omega_t \propto (1-\lambda)\lambda^{T-t}
+  \]
+  This reduces sensitivity to stale history by emphasizing recent observations.
+
+#### Covariance matrix \(\Sigma\)
+Risk is modeled via the annualized covariance matrix:
+\[
+\Sigma = \operatorname{Cov}(r)
+\]
+Supported estimators:
+
+- **Sample covariance:**
+  \[
+  \hat{\Sigma}_{\text{daily}} = \frac{1}{T-1}\sum_{t=1}^T (r_t-\hat{\mu})(r_t-\hat{\mu})^\top,
+  \quad \hat{\Sigma}_{\text{annual}} = \hat{\Sigma}_{\text{daily}}\cdot A
+  \]
+
+- **EWMA covariance (RiskMetrics-style):**
+  \[
+  \hat{\Sigma}_{\text{daily}} = \sum_{t=1}^T \omega_t (r_t-\hat{\mu})(r_t-\hat{\mu})^\top
+  \]
+
+- **Shrinkage covariance (preferred in practice):**
+  \[
+  \hat{\Sigma}_{\text{shrink}} = (1-\alpha)\hat{\Sigma}_{\text{sample}} + \alpha T
+  \]
+  where \(T\) is a structured target (e.g., diagonal or identity-scaled), and \(\alpha\in[0,1]\) controls shrinkage.
+  If available, **Ledoit–Wolf** shrinkage (via scikit-learn) is used.
+
+#### Winsorization (robust preprocessing)
+To reduce the impact of extreme outliers (common in daily returns), returns can be **winsorized** column-wise by clipping tails:
+\[
+r_{i,t} \leftarrow \min\left(\max(r_{i,t}, q_i(p)),\, q_i(1-p)\right)
+\]
+where \(q_i(p)\) is the \(p\)-quantile of asset \(i\)’s returns. Typical default: \(p=0.01\) (1% / 99%).
+
+#### PSD enforcement (numerical stability)
+Optimizers require \(\Sigma\) to behave like a valid covariance matrix (positive semidefinite).  
+If numerical issues occur, the matrix is symmetrized and eigenvalues are clipped:
+\[
+\Sigma \leftarrow Q \max(\Lambda, \epsilon I) Q^\top
+\]
+with a small ridge term added to improve conditioning.
+
+---
+
+### 3) Optimization Problems Solved
+
+#### A) Minimum Variance Portfolio (global minimum variance)
+\[
+\min_{w} \quad w^\top \Sigma w
+\]
+subject to constraints (see below).
+
+#### B) Maximum Sharpe Ratio Portfolio
+Sharpe ratio:
+\[
+S(w) = \frac{w^\top \mu - r_f}{\sqrt{w^\top \Sigma w}}
+\]
+The solver minimizes the negative Sharpe (equivalent to maximizing Sharpe):
+\[
+\min_{w} \quad -S(w)
+\]
+Optionally with **L2 regularization** for stability:
+\[
+\min_{w} \quad -S(w) + \lambda \sum_{i=1}^N w_i^2
+\]
+This discourages fragile, concentrated solutions caused by noisy \(\mu\).
+
+---
+
+### 4) Constraints (Feasibility / Mandate Controls)
+
+Common constraints:
+- **Full investment:**
+  \[
+  \sum_{i=1}^N w_i = 1
+  \]
+- **Bounds (long-only and position limits):**
+  \[
+  w_i \in [w_{\min}, w_{\max}]
+  \]
+  In long-only mode, \(w_i \ge 0\).
+
+Optional concentration constraint:
+- **HHI cap (Herfindahl–Hirschman Index):**
+  \[
+  \text{HHI}(w)=\sum_{i=1}^N w_i^2 \le \text{HHI}_{\max}
+  \]
+Lower HHI implies more diversified allocations.
+
+---
+
+### 5) Numerical Optimization Method
+Optimization is performed with **SciPy SLSQP** (Sequential Least Squares Quadratic Programming), which supports:
+- equality constraints (e.g., sum-to-one),
+- inequality constraints (e.g., HHI cap),
+- bound constraints (min/max weights).
+
+To reduce dependence on local minima and starting conditions, the tool uses **multi-start optimization**:
+- random feasible initial weights (Dirichlet simplex samples),
+- solve the optimization from many starts,
+- deduplicate and rank solutions.
+
+---
+
+### 6) Candidate Ranking & Efficient Set Approximation
+
+Each candidate portfolio is evaluated by:
+- expected return \(w^\top \mu\),
+- volatility \(\sqrt{w^\top\Sigma w}\),
+- Sharpe ratio.
+
+A Pareto-efficient subset (“efficient set”) is extracted by discarding dominated portfolios (higher risk and lower return than another candidate).
+
+---
+
+### 7) Risk & Performance Metrics (Reporting)
+The reporting layer exports:
+- annualized return (based on configured return type and annualization factor),
+- annualized volatility,
+- Sharpe ratio (using user-supplied \(r_f\)),
+- max drawdown (from cumulative equity curve),
+- concentration proxy (HHI),
+- full weights and portfolio return series for auditability.
 
 ---
 
 ## 8. Roadmap
 
-### v0.2.1 — Multi-Strategy Comparison + PyFolio Targeting
-- Multi-strategy comparison (side-by-side metrics/plots vs the same benchmark)
-- Strategy-level benchmarking (pairwise alignment per strategy/benchmark)
-- Cleaner PyFolio targeting and export behavior for multi-series inputs (`--pyfolio-target`, `--pyfolio-out`)
-- Additional input/validation polish around CSV series (prices vs returns) and naming consistency
+- Walk-forward OOS validation mode (`--walk-forward`)
+- Turnover + transaction cost modeling
+- Benchmark-relative constraints (tracking error)
+- Factor risk model covariance (stability upgrade)
+- Black–Litterman / return shrinkage models
 
-### v0.3.0 — Risk Scaling & Regime Awareness
-- Regime-conditioned analytics
-- Regime segmentation
-- Volatility targeting and risk scaling
-- Expanded internal metrics (progressive removal of external dependencies such as PyFolio)
-- Expanded benchmark universe
-
-### v0.4.0 — Factor & Attribution Analysis
-- Factor regression framework
-- Performance attribution
-- Rolling factor exposure analysis
-- Attribution tables and charts
-
-> **Note:** PyFolio support is transitional and may be deprecated in future releases in favor of native, transparent analytics.
-
----
 
 ## Disclaimer
 
 This project is for research and educational purposes only.  
 It does not constitute financial advice.
-
----
-
-## Why This Project Exists
-
-Most beginner finance projects stop at plotting prices.
-
-This project focuses on how performance is evaluated in professional settings:  
-risk-adjusted returns, benchmark context, drawdowns, and regime sensitivity.
-
-It is intentionally built as a clean, extensible analytics core suitable as a base  
-for more advanced quantitative research.
+ 
